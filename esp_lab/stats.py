@@ -456,7 +456,8 @@ def compute_skill_seasonal(mod_da,mod_time,obs_da,climy0,climy1,nleadavg=1,nlead
     lvalsda = xr.DataArray(mod_da.isel(L=slice(0,nleads)).L,dims="L",name="L")
     for i in range(nleads):
         leadisel = lvals + i 
-        ens_ts = mod_da.isel(L=leadisel).mean('L').rename({'Y':'time'})
+        ens_ts = mod_da.isel(L=leadisel).mean('L').rename({'Y':'time'}).chunk(dict(time=-1))
+        #ens_ts = mod_da.isel(L=leadisel).mean('L').rename({'Y':'time'})
         ens_time_year = mod_time.isel(L=leadisel).mean('L').dt.year
         ens_time_month = mod_time.isel(L=leadisel).mean('L').dt.month.data[0]
         ens_ts = ens_ts.assign_coords(time=("time",ens_time_year.data))
@@ -501,6 +502,63 @@ def compute_skill_seasonal(mod_da,mod_time,obs_da,climy0,climy1,nleadavg=1,nlead
     sigt = xr.concat(sigtot_list,lvalsda)
     s2t  = xr.concat(s2t_list,lvalsda)
     return xr.Dataset({'corr':corr,'pval':pval,'rmse':rmse,'msss':msss,'rpc':rpc,'sig_obs':sigo,'sig_sig':sigs,'sig_tot':sigt,'s2t':s2t})
+
+def compute_skill_seasonal2(mod_da,mod_time,obs_da,climy0,climy1,resamp=0,detrend=False):
+    corr_list = []
+    lvalsda = mod_da.L
+    nleads = mod_da.sizes['L']
+    for i in range(nleads):
+        ens_ts = mod_da.isel(L=i).rename({'Y':'time'}).chunk(dict(time=-1))
+        ens_time_year = mod_time.isel(L=i).dt.year
+        ens_time_month = mod_time.isel(L=i).dt.month.data[0]
+        ens_ts = ens_ts.assign_coords(time=("time",ens_time_year.data))
+        obsisel = obs_da.time.dt.month==ens_time_month
+        obs_seas = obs_da.isel(time=obsisel)
+        obs_seas = obs_seas - obs_seas.sel(time=slice(climy0,climy1)).mean('time')
+        obs_seas = obs_seas.assign_coords(time=("time",obs_seas.time.dt.year.data))
+        a,b = xr.align(ens_ts,obs_seas)
+        if detrend:
+                a = detrend_linear(a,'time')
+                b = detrend_linear(b,'time')
+        amean = a.mean('M')
+        sigobs = b.std('time')
+        sighind = amean.std('time')
+        r_decomp = (amean*obs_seas)/(sigobs*sighind)
+        r_decomp = r_decomp.rename({'time':'Y'})
+        r_decomp['Y'] = mod_time.Y
+
+        corr_list.append(r_decomp)
+    corr = xr.concat(corr_list,mod_time)
+    return xr.Dataset({'corr':corr})
+
+def compute_skill_seasonal3(mod_da,mod_time,obs_da,climy0,climy1,detrend=False):
+    tmp_da = mod_da
+    corr_list = []
+    lvalsda = mod_da.L
+    nleads = mod_da.sizes['L']
+    for i in range(nleads):
+        ens_ts = mod_da.isel(L=i).rename({'Y':'time'}).chunk(dict(time=-1))
+        ens_time_year = mod_time.isel(L=i).dt.year
+        ens_time_month = mod_time.isel(L=i).dt.month.data[0]
+        ens_ts = ens_ts.assign_coords(time=("time",ens_time_year.data))
+        obsisel = obs_da.time.dt.month==ens_time_month
+        obs_seas = obs_da.isel(time=obsisel)
+        obs_seas = obs_seas - obs_seas.sel(time=slice(climy0,climy1)).mean('time')
+        obs_seas = obs_seas.assign_coords(time=("time",obs_seas.time.dt.year.data))
+        obs_ts = xr.full_like(ens_ts.isel(M=0).squeeze(),np.nan)
+        a,b = xr.align(ens_ts,obs_seas)
+        if detrend:
+                a = detrend_linear(a,'time')
+                b = detrend_linear(b,'time')
+        amean = a.mean('M')
+        bsig = ((b**2).sum('time'))**(1/2)
+        ameansig = ((amean**2).sum('time'))**(1/2)
+        r_decomp = (amean*b)/(ameansig*bsig)
+        r_decomp = r_decomp.broadcast_like(ens_ts.isel(M=0).squeeze()).rename({'time':'Y'})
+        r_decomp['Y'] = mod_time.Y
+        corr_list.append(r_decomp)
+    corr = xr.concat(corr_list,dim=lvalsda)
+    return xr.Dataset({'corr':corr})
 
 
 def compute_resampskill_annual(mod_da,mod_time,obs_da,nleadavg=1,nleads=1,detrend=False,resamp=0,mean=True):
@@ -641,14 +699,14 @@ def compute_resampskill_seasonal(mod_da,mod_time,obs_da,climy0,climy1,nleadavg=1
     else:
         lvals = np.arange(nleadavg)*4
     # Convert to leadtime values
-    lvalsda = xr.DataArray(mod_da.isel(L=slice(0,nleads)).L-2,dims="L",name="L")
+    lvalsda = xr.DataArray(mod_da.isel(L=slice(0,nleads)).L,dims="L",name="L")
     
     for l in mod_da.iteration.values:
         corr_list = []; pval_list = []; rmse_list = []; msss_list = []; rpc_list = []
         sigobs_list = []; sigsig_list = []; sigtot_list = []; s2t_list = []
         for i in range(nleads):
             leadisel = lvals + i 
-            ens_ts = mod_da.sel(iteration=l).isel(L=leadisel).mean('L').rename({'Y':'time'})
+            ens_ts = mod_da.sel(iteration=l).isel(L=leadisel).mean('L').rename({'Y':'time'}).chunk(dict(time=-1))
             ens_time_year = mod_time.isel(L=leadisel).mean('L').dt.year
             ens_time_month = mod_time.isel(L=leadisel).mean('L').dt.month.data[0]
             ens_ts = ens_ts.assign_coords(time=("time",ens_time_year.data))
@@ -668,7 +726,7 @@ def compute_resampskill_seasonal(mod_da,mod_time,obs_da,climy0,climy1,nleadavg=1
             if (resamp>0):
                 iterations = resamp
                 ens_size = 1
-                a_resamp = xs.resample_iterations_idx(a, iterations, 'M', dim_max=ens_size).squeeze()
+                a_resamp = xs.resample_iterations(a, iterations, 'M', dim_max=ens_size).squeeze()
                 sigtot = a_resamp.std('time').mean('iteration')
             else:
                 sigtot = a.std('time').mean('M')
@@ -676,13 +734,14 @@ def compute_resampskill_seasonal(mod_da,mod_time,obs_da,climy0,climy1,nleadavg=1
             rpc = r/(sigsig/sigtot)
             corr_list.append(r)
             rpc_list.append(rpc.where(r>0))
-            rmse_list.append(xs.rmse(amean,b,dim='time')/sigobs)
             msss_list.append(1-(xs.mse(amean,b,dim='time')/b.var('time')))
             pval_list.append(xs.pearson_r_eff_p_value(amean,b,dim='time'))
             sigobs_list.append(sigobs)
             sigsig_list.append(sigsig)
             sigtot_list.append(sigtot)
             s2t_list.append(sigsig/sigtot)
+            nrmse = xs.rmse(amean,b,dim=['time'])/sigobs
+            rmse_list.append(nrmse)
         corr = xr.concat(corr_list,lvalsda)
         pval = xr.concat(pval_list,lvalsda)
         rmse = xr.concat(rmse_list,lvalsda)
